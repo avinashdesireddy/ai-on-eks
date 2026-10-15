@@ -17,7 +17,7 @@ spec:
                     nvidia.com/dynamo-graph-deployment-name: "vllm-agg"
                     nvidia.com/dynamo-component-type: "worker"
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.0.0
+          image: nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.5.1
     VllmDecodeWorker:
       envFromSecret: hf-token-secret
       componentType: worker
@@ -42,7 +42,7 @@ spec:
                   matchLabels:
                     nvidia.com/dynamo-graph-deployment-name: "vllm-agg"
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.0.0-efa-amd64
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1-efa-amd64
           workingDir: /workspace/examples/backends/vllm
           command:
           - /bin/bash

@@ -1,15 +1,12 @@
+# NVIDIA Dynamo Inference Deployments
 
-# 🚨 This blueprint is currently outdated — we're actively working on a fresh, improved version to celebrate the release of NVIDIA Dynamo v1. 🚨
-
-# NVIDIA Dynamo v0.5.0 Inference Examples
-
-This directory contains production-ready examples for deploying different inference backends using NVIDIA Dynamo v0.5.0 on Amazon EKS. These examples use official NGC prebuilt containers with `DynamoGraphDeployment` manifests for GitOps-based deployment via ArgoCD.
+This directory contains production-ready deployment recipes for serving models with NVIDIA Dynamo on Amazon EKS. Each recipe uses official NGC prebuilt containers with `DynamoGraphDeployment` manifests, and is organized by **Dynamo capability** (what feature it demonstrates) and **inference engine** (which runtime it uses).
 
 ## Quick Start
 
 ### 1. Deploy Infrastructure
 ```bash
-# Deploy Dynamo platform via ArgoCD
+# Deploy EKS Infrastructure with Karpenter Nodepools
 cd infra/nvidia-dynamo
 ./install.sh
 ```
@@ -18,13 +15,13 @@ cd infra/nvidia-dynamo
 ```bash
 # Deploy any example (HF token handled automatically)
 cd blueprints/inference/nvidia-dynamo
-./deploy.sh vllm           # or any other example
+./deploy.sh vllm-aggregated-default           # or any other example
 ```
 
 ### 3. Test Deployment
 ```bash
 # Port forward and test API
-kubectl port-forward svc/vllm-frontend 8000:8000 -n dynamo-cloud
+kubectl port-forward svc/vllm-aggregated-default-frontend 8000:8000 -n dynamo-system
 curl http://localhost:8000/v1/models
 ```
 
@@ -39,28 +36,31 @@ cd infra/nvidia-dynamo
 
 - **EKS Cluster**: Kubernetes 1.28+ with GPU nodes (G5 instances recommended)
 - **Karpenter**: For automatic GPU node provisioning
-- **ArgoCD**: Deployed via the installation script
 - **HuggingFace Token**: For model downloads (set `HF_TOKEN` environment variable or enter interactively)
 
-## Available Examples
+## Available Deployments
 
-### Basic Examples (Production Ready)
-| Example | Description | Models | Features |
-|---------|-------------|--------|---------|
-| **[hello-world](hello-world/)** | CPU-only testing example | N/A | Basic connectivity test |
-| **[vllm](vllm/)** | vLLM aggregated serving | Qwen3-0.6B | OpenAI API, G5 GPU |
-| **[sglang](sglang/)** | SGLang with advanced caching | DeepSeek-R1-Distill-Llama-8B | RadixAttention, Multi-model |
-| **[trtllm](trtllm/)** | TensorRT-LLM optimized | DeepSeek-R1-Distill-Llama-8B | Maximum performance |
-| **[multi-replica-vllm](multi-replica-vllm/)** | Multi-replica HA deployment | Multiple models | KV routing, load balancing |
+A deployment is a runnable recipe = a **Dynamo capability** served by an **inference engine**.
+The **model is a parameter** you set on the worker (`--model …`, see
+[Model Configuration](#model-configuration)) — not part of the layout, so adding a new model
+(e.g. a Nemotron variant) is a config change, not a new folder. Links point to the validated
+vLLM manifest; other engines follow as they are validated.
 
-### Advanced Examples (Beta)
-| Example | Description | Use Case |
-|---------|-------------|----------|
-| **[vllm-disagg](vllm-disagg/)** | Separate prefill/decode workers | High throughput scenarios |
-| **[sglang-disagg](sglang-disagg/)** | Disaggregated with RadixAttention | Memory optimization |
-| **[trtllm-disagg](trtllm-disagg/)** | TRT-LLM disaggregated | Ultra-high performance |
-| **[kv-routing](kv-routing/)** | KV-aware intelligent routing | Cache optimization |
-| **[sla-planner](sla-planner/)** | SLA-based autoscaling | Predictive scaling |
+| Capability | vLLM | SGLang | TensorRT-LLM | Default model (vLLM) |
+|------------|------|--------|--------------|----------------------|
+| Aggregated serving | [✅](vllm/vllm-aggregated-default.yaml) | 🚧 | 🚧 | Qwen3-8B (TP=2, 2 GPUs) |
+| Disaggregated serving (prefill/decode) | [✅](vllm/vllm-disaggregated-default.yaml) | 🚧 | 🚧 | Qwen3-0.6B (1 GPU) |
+| KV-aware routing | [✅](vllm/router/vllm-router.yaml) | 🚧 | 🚧 | Qwen3-0.6B (1 GPU) |
+| Multi-replica HA | [✅](multi-replica-vllm/multi-replica-vllm.yaml) | — | — | Qwen3-0.6B (1 GPU) |
+| KV-cache offloading | 🚧 Upcoming | 🚧 | 🚧 | — |
+| SLA-based planner / autoscaling | 🚧 Upcoming | 🚧 | 🚧 | — |
+
+**Legend:** ✅ validated · 🚧 upcoming / not yet validated · — not applicable
+
+**Engine folders:** vLLM — [`vllm/`](vllm/), [`multi-replica-vllm/`](multi-replica-vllm/), [`hello-world/`](hello-world/) (CPU connectivity test) · SGLang — [`sglang/`](sglang/) · TensorRT-LLM — [`trtllm/`](trtllm/)
+
+New capabilities (e.g. KV-cache offloading) will land under a dedicated `capabilities/`
+folder as that work begins; until then this matrix is the source of truth for what exists.
 
 ## Deployment Guide
 
@@ -71,31 +71,33 @@ cd infra/nvidia-dynamo
 
 # Direct deployment with automatic HF token handling
 export HF_TOKEN="your-token-here"  # Optional: set token in environment
-./deploy.sh vllm           # Deploy vLLM with Qwen3-0.6B
-./deploy.sh sglang         # Deploy SGLang with DeepSeek model
-./deploy.sh trtllm         # Deploy TensorRT-LLM optimized
+./deploy.sh vllm-aggregated-default      # Deploy vLLM with Qwen3-0.6B
+./deploy.sh vllm-disaggregated-default   # Deploy vLLM with separate prefill/decode workers
+./deploy.sh multi-replica-vllm           # Deploy multi-replica vLLM with KV routing
+
+# Note: SGLang and TensorRT-LLM examples are 🚧 Upcoming (not yet validated).
 ```
 
 ### Manual Deployment
 ```bash
 # Create HuggingFace secret (for GPU examples)
 kubectl create secret generic hf-token-secret \
-  --from-literal=HF_TOKEN="your-token" -n dynamo-cloud
+  --from-literal=HF_TOKEN="your-token" -n dynamo-system
 
 # Deploy specific example
-kubectl apply -f vllm/vllm.yaml -n dynamo-cloud
+kubectl apply -f vllm/vllm-aggregated-default.yaml -n dynamo-system
 
 # Monitor deployment
-kubectl get pods -n dynamo-cloud -l app=vllm -w
+kubectl get pods -n dynamo-system -l nvidia.com/dynamo-namespace=vllm-aggregated-default -w
 ```
 
 ### Testing Deployments
 ```bash
 # Port forward via Service (recommended) - enables both API and metrics access
-kubectl port-forward service/vllm-frontend 8000:8000 -n dynamo-cloud
+kubectl port-forward service/vllm-frontend 8000:8000 -n dynamo-system
 
 # Alternative: Direct deployment port-forward
-# kubectl port-forward deployment/vllm-frontend 8000:8000 -n dynamo-cloud
+# kubectl port-forward deployment/vllm-frontend 8000:8000 -n dynamo-system
 
 # Test health, models, and metrics
 curl http://localhost:8000/health
@@ -112,9 +114,9 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 ### NGC Container Images
 All examples use official NVIDIA NGC prebuilt containers with full source code:
-- `nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0`
-- `nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.5.0`
-- `nvcr.io/nvidia/ai-dynamo/trtllm-runtime:0.5.0`
+- `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1`
+- `nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.5.1`
+- `nvcr.io/nvidia/ai-dynamo/trtllm-runtime:1.5.1`
 
 **Key Features:**
 - ✅ **Full Source Included**: All Python code available at `/workspace/`
@@ -207,7 +209,7 @@ spec:
         nodeSelector:
           karpenter.sh/nodepool: cpu-karpenter
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           args: ["python3", "-m", "dynamo.frontend", "--http-port", "8000"]
 
@@ -225,7 +227,7 @@ spec:
         nodeSelector:
           karpenter.sh/nodepool: g5-gpu-karpenter
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           args: ["python3", "-m", "dynamo.vllm", "--model", "Qwen/Qwen3-0.6B"]
 ```
 
@@ -437,11 +439,11 @@ extraPodSpec:
 #### **Step 3: Study Existing Code**
 ```bash
 # Explore container contents
-kubectl exec -it vllm-frontend-xxx -n dynamo-cloud -- ls -la /workspace/
-kubectl exec -it vllm-frontend-xxx -n dynamo-cloud -- find /workspace/ -name "*.py" | head -20
+kubectl exec -it vllm-frontend-xxx -n dynamo-system -- ls -la /workspace/
+kubectl exec -it vllm-frontend-xxx -n dynamo-system -- find /workspace/ -name "*.py" | head -20
 
 # Check backend-specific implementations
-kubectl exec -it vllm-worker-xxx -n dynamo-cloud -- ls -la /workspace/components/backends/
+kubectl exec -it vllm-worker-xxx -n dynamo-system -- ls -la /workspace/components/backends/
 ```
 
 #### **Step 4: Create Custom YAML Template**
@@ -464,7 +466,7 @@ spec:
         nodeSelector:
           karpenter.sh/nodepool: cpu-karpenter  # CPU-only frontend
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           args: ["python3", "-m", "dynamo.frontend", "--http-port", "8000"]
 
@@ -486,7 +488,7 @@ spec:
           operator: Exists
           effect: NoSchedule
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           args: ["python3", "-m", "dynamo.vllm", "--model", "your-model-here"]
 ```
@@ -708,7 +710,7 @@ envs:
 Workers expose Prometheus-compatible metrics:
 ```bash
 # Check worker metrics
-kubectl port-forward vllm-worker-xxx 9090:9090 -n dynamo-cloud
+kubectl port-forward vllm-worker-xxx 9090:9090 -n dynamo-system
 curl http://localhost:9090/metrics
 ```
 
@@ -725,14 +727,14 @@ The most efficient approach uses the existing Service with AWS Load Balancer Con
 kubectl annotate service ${EXAMPLE}-frontend \
   service.beta.kubernetes.io/aws-load-balancer-type="nlb" \
   service.beta.kubernetes.io/aws-load-balancer-target-type="ip" \
-  -n dynamo-cloud
+  -n dynamo-system
 
 # Option B: Application Load Balancer (ALB) - More Features
 kubectl annotate service ${EXAMPLE}-frontend \
   service.beta.kubernetes.io/aws-load-balancer-type="external" \
   service.beta.kubernetes.io/aws-load-balancer-target-type="ip" \
   service.beta.kubernetes.io/aws-load-balancer-scheme="internet-facing" \
-  -n dynamo-cloud
+  -n dynamo-system
 ```
 
 **Key Benefits:**
@@ -750,7 +752,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: ${EXAMPLE}-ingress
-  namespace: dynamo-cloud
+  namespace: dynamo-system
   annotations:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
@@ -816,18 +818,18 @@ annotations:
 
 ### External Access Examples by Deployment
 
-Replace `${EXAMPLE}` with your deployment name (vllm, sglang, trtllm, etc.):
+Replace `${EXAMPLE}` with your deployment name (vllm-aggregated-default, sglang-aggregated-default, trtllm-aggregated-default, etc.):
 
 ```bash
 # Quick NLB setup for any example
-EXAMPLE="vllm"  # or sglang, trtllm, etc.
+EXAMPLE="vllm-aggregated-default"  # or sglang-aggregated-default, trtllm-aggregated-default, etc.
 kubectl annotate service ${EXAMPLE}-frontend \
   service.beta.kubernetes.io/aws-load-balancer-type="nlb" \
   service.beta.kubernetes.io/aws-load-balancer-target-type="ip" \
-  -n dynamo-cloud
+  -n dynamo-system
 
 # Get external endpoint
-kubectl get service ${EXAMPLE}-frontend -n dynamo-cloud
+kubectl get service ${EXAMPLE}-frontend -n dynamo-system
 ```
 
 ### Security Considerations
@@ -845,7 +847,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: ${EXAMPLE}-frontend-netpol
-  namespace: dynamo-cloud
+  namespace: dynamo-system
 spec:
   podSelector:
     matchLabels:
@@ -877,10 +879,10 @@ The Service created by the deploy script enables both API access and Prometheus 
 
 ```bash
 # Check service endpoints
-kubectl get endpoints ${EXAMPLE}-frontend -n dynamo-cloud
+kubectl get endpoints ${EXAMPLE}-frontend -n dynamo-system
 
 # Verify load balancer health checks
-kubectl describe service ${EXAMPLE}-frontend -n dynamo-cloud
+kubectl describe service ${EXAMPLE}-frontend -n dynamo-system
 
 # Monitor via ServiceMonitor (automatically created)
 curl http://<load-balancer-url>/metrics
@@ -934,8 +936,8 @@ envs:
 **Verification**:
 ```bash
 # Check namespace isolation is working
-kubectl port-forward svc/vllm-frontend 8001:8000 -n dynamo-cloud &
-kubectl port-forward svc/sglang-frontend 8002:8000 -n dynamo-cloud &
+kubectl port-forward svc/vllm-frontend 8001:8000 -n dynamo-system &
+kubectl port-forward svc/sglang-frontend 8002:8000 -n dynamo-system &
 
 # vllm should only show Qwen model
 curl http://localhost:8001/health | jq '.instances[].namespace' | sort -u
@@ -960,11 +962,11 @@ The `deploy.sh` script creates three Kubernetes resources for each deployment:
 3. **ServiceMonitor**: Prometheus monitoring configuration for metrics collection
 
 ```bash
-./deploy.sh vllm
+./deploy.sh vllm-aggregated-default
 # Creates:
-# - DynamoGraphDeployment: vllm
-# - Service: vllm-frontend (port 8000)
-# - ServiceMonitor: vllm-frontend-monitor (scrapes port 8000/metrics)
+# - DynamoGraphDeployment: vllm-aggregated-default
+# - Service: vllm-aggregated-default-frontend (port 8000)
+# - ServiceMonitor: vllm-aggregated-default-frontend-metrics (scrapes port 8000/metrics)
 ```
 
 ### Service and Monitoring Integration
@@ -982,7 +984,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ${EXAMPLE}-frontend
-  namespace: dynamo-cloud
+  namespace: dynamo-system
   labels:
     app: ${EXAMPLE}-frontend
 spec:
@@ -1002,7 +1004,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: ${EXAMPLE}-frontend-monitor
-  namespace: dynamo-cloud
+  namespace: dynamo-system
 spec:
   selector:
     matchLabels:
@@ -1042,9 +1044,9 @@ The `test.sh` script provides interactive testing of deployed examples:
 **1. Pod Stuck in Pending - Node Selection Issues**
 ```bash
 # Check pod events and node availability
-kubectl describe pod <pod-name> -n dynamo-cloud
+kubectl describe pod <pod-name> -n dynamo-system
 kubectl get nodes -l karpenter.sh/nodepool=g5-gpu-karpenter
-kubectl get events -n dynamo-cloud --sort-by='.lastTimestamp' | grep -i pending
+kubectl get events -n dynamo-system --sort-by='.lastTimestamp' | grep -i pending
 ```
 
 **Possible Solutions:**
@@ -1128,8 +1130,8 @@ extraPodSpec:
 **4. Model Download Failures**
 ```bash
 # Check HuggingFace token secret and network access
-kubectl get secret hf-token-secret -n dynamo-cloud -o yaml
-kubectl logs <worker-pod> -n dynamo-cloud | grep -i "download\|token\|auth"
+kubectl get secret hf-token-secret -n dynamo-system -o yaml
+kubectl logs <worker-pod> -n dynamo-system | grep -i "download\|token\|auth"
 ```
 
 **Possible Solutions:**
@@ -1140,8 +1142,8 @@ kubectl logs <worker-pod> -n dynamo-cloud | grep -i "download\|token\|auth"
 **5. Frontend Not Finding Workers**
 ```bash
 # Check service discovery and namespace configuration
-kubectl logs <frontend-pod> -n dynamo-cloud | grep -i discover
-kubectl get pods -n dynamo-cloud -l componentType=worker
+kubectl logs <frontend-pod> -n dynamo-system | grep -i discover
+kubectl get pods -n dynamo-system -l componentType=worker
 etcdctl get --prefix /dynamo/ --keys-only  # If etcd is accessible
 ```
 
@@ -1153,8 +1155,8 @@ etcdctl get --prefix /dynamo/ --keys-only  # If etcd is accessible
 **6. API 503 Errors**
 ```bash
 # Check worker readiness and health
-kubectl get pods -n dynamo-cloud -l componentType=worker
-kubectl logs <worker-pod> -n dynamo-cloud --tail=100 | grep -i "ready\|health\|error"
+kubectl get pods -n dynamo-system -l componentType=worker
+kubectl logs <worker-pod> -n dynamo-system --tail=100 | grep -i "ready\|health\|error"
 ```
 
 **Possible Solutions:**
@@ -1177,13 +1179,13 @@ readinessProbe:
 ### Cleanup and Reset
 ```bash
 # Remove specific deployment
-kubectl delete dynamographdeployment <name> -n dynamo-cloud
+kubectl delete dynamographdeployment <name> -n dynamo-system
 
 # Full cleanup (removes all infrastructure)
 cd infra/nvidia-dynamo && ./cleanup.sh
 
 # Reset just the examples (keep platform)
-kubectl delete dynamographdeployment --all -n dynamo-cloud
+kubectl delete dynamographdeployment --all -n dynamo-system
 ```
 
 ## Documentation and Resources
@@ -1197,7 +1199,7 @@ kubectl delete dynamographdeployment --all -n dynamo-cloud
 ### Additional Examples
 Explore the `/workspace/` directory in containers for more examples:
 ```bash
-kubectl exec -it <pod-name> -n dynamo-cloud -- find /workspace/examples -type f -name "*.py"
+kubectl exec -it <pod-name> -n dynamo-system -- find /workspace/examples -type f -name "*.py"
 ```
 
 ---

@@ -5,7 +5,8 @@ apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
 metadata:
   name: multi-replica-vllm
-  namespace: dynamo-cloud
+  namespace: dynamo-system
+
 spec:
   services:
     Frontend:
@@ -39,7 +40,7 @@ spec:
           memory: "2Gi"
       extraPodSpec:
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           command:
             - /bin/sh
@@ -76,7 +77,12 @@ spec:
           gpu: "1"
       extraPodSpec:
         nodeSelector:
-          karpenter.sh/nodepool: g5-gpu-karpenter
+          karpenter.sh/nodepool: gpu
+          kubernetes.io/arch: amd64
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
         mainContainer:
           startupProbe:
             httpGet:
@@ -84,13 +90,13 @@ spec:
               port: 9090
             periodSeconds: 10
             failureThreshold: 60
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           command:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --is-prefill-worker 2>&1 | tee /tmp/prefill.log"
+            - "python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --is-prefill-worker --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\"}' 2>&1 | tee /tmp/prefill.log"
     DecodeWorker:
       envFromSecret: hf-token-secret
       livenessProbe:
@@ -121,7 +127,12 @@ spec:
           gpu: "1"
       extraPodSpec:
         nodeSelector:
-          karpenter.sh/nodepool: g5-gpu-karpenter
+          karpenter.sh/nodepool: gpu
+          kubernetes.io/arch: amd64
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
         mainContainer:
           startupProbe:
             httpGet:
@@ -129,10 +140,10 @@ spec:
               port: 9090
             periodSeconds: 10
             failureThreshold: 60
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.5.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.5.1
           workingDir: /workspace/components/backends/vllm
           command:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B 2>&1 | tee /tmp/decode.log"
+            - "python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\"}' 2>&1 | tee /tmp/decode.log"

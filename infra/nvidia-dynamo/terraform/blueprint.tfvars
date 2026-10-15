@@ -1,5 +1,7 @@
 name                             = "dynamo-on-eks"
 enable_dynamo_platform           = true
+
+dynamo_platform_version          = "1.5.1"
 enable_aws_efs_csi_driver        = true
 enable_aws_efa_k8s_device_plugin = true
 enable_kube_prometheus_stack     = true

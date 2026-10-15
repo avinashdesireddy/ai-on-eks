@@ -667,7 +667,7 @@ variable "enable_dynamo_platform" {
 variable "dynamo_platform_version" {
   description = "NVIDIA Dynamo Platform version"
   type        = string
-  default     = "1.0.0"
+  default     = "1.5.1"
 }
 variable "dynamo_platform_namespace" {
   description = "Namespace for NVIDIA Dynamo Platform"

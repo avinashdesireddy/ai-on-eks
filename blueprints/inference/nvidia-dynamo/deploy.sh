@@ -20,10 +20,10 @@
 # Version Management:
 #   - Automatically reads version from ../infra/nvidia-dynamo/terraform/blueprint.tfvars
 #   - Can override with DYNAMO_VERSION environment variable
-#   - Example: DYNAMO_VERSION=v0.4.1 ./deploy.sh vllm
+#   - Example: DYNAMO_VERSION=v1.5.1 ./deploy.sh vllm
 #---------------------------------------------------------------
 
-set -euo pipefail
+set -euxo pipefail
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +40,7 @@ NAMESPACE="dynamo-system"
 
 # Dynamo version management
 TFVARS_FILE="${SCRIPT_DIR}/../../../infra/nvidia-dynamo/terraform/blueprint.tfvars"
-DEFAULT_VERSION="v1.0.0"  # Fallback if tfvars file not found
+DEFAULT_VERSION="v1.5.1"  # Fallback if tfvars file not found (source of truth is blueprint.tfvars)
 VERSION_SOURCE=""  # Track where version came from
 
 # Utility functions
@@ -80,7 +80,7 @@ if [ -n "${DYNAMO_VERSION:-}" ]; then
     VERSION_SOURCE="env"
 # Priority 2: Read from tfvars file
 elif [ -f "${TFVARS_FILE}" ]; then
-    tfvars_version=$(grep '^dynamo_platform_version' "${TFVARS_FILE}" 2>/dev/null | sed 's/.*= *"\(.*\)"/\1/' | tr -d ' ')
+    tfvars_version=$(grep '^dynamo_platform_version' "${TFVARS_FILE}" 2>/dev/null | sed 's/.*= *"\(.*\)"/\1/' | tr -d ' ' || true)
     if [ -n "${tfvars_version}" ]; then
         DYNAMO_VERSION="${tfvars_version}"
         VERSION_SOURCE="tfvars"
@@ -220,23 +220,67 @@ EXAMPLE_DIR="${SCRIPT_DIR}/${EXAMPLE_PATH}"
 MANIFEST_FILE="${EXAMPLE_DIR}/${EXAMPLE}.yaml"
 DEPLOYMENT_NAME="${EXAMPLE}"
 
-# Create temporary manifest with correct version if needed
-# This allows using different Dynamo versions without modifying the example YAML files
-TEMP_MANIFEST=""
+# Render the manifest at the resolved Dynamo version using Kustomize's native
+# `images:` transformer. This overrides the committed image tags without editing
+# the example YAML files, so a single knob (DYNAMO_VERSION env or the
+# dynamo_platform_version in blueprint.tfvars) controls every ai-dynamo image tag.
+#
+# DynamoGraphDeployment is a CRD and keeps its container image at a custom path
+# (spec.services.<ServiceName>.extraPodSpec.mainContainer.image) that Kustomize's
+# built-in image transformer does not traverse. We therefore generate an image
+# transformer `configurations` fieldspec for each service key found in the
+# selected manifest so the override applies generically regardless of the names.
+TEMP_BUILD_DIR=""
 if [ -f "${MANIFEST_FILE}" ]; then
-    # Check if manifest contains version references that need updating
-    if grep -q 'nvcr.io/nvidia/ai-dynamo/.*:0\.4\.0' "${MANIFEST_FILE}" 2>/dev/null; then
-        # Extract just the version number without 'v' prefix if present
-        VERSION_TAG="${DYNAMO_VERSION#v}"
+    # Normalize version to a bare image tag (strip any leading 'v').
+    VERSION_TAG="${DYNAMO_VERSION#v}"
 
-        # Only update if version is different from 0.4.1
-        if [ "${VERSION_TAG}" != "0.4.1" ]; then
-            TEMP_MANIFEST="$(mktemp)"
-            info "Updating manifest to use Dynamo version ${VERSION_TAG}..."
-            sed "s/:0\.4\.0/:${VERSION_TAG}/g" "${MANIFEST_FILE}" > "${TEMP_MANIFEST}"
-            MANIFEST_FILE="${TEMP_MANIFEST}"
-        fi
-    fi
+    TEMP_BUILD_DIR="$(mktemp -d)"
+    # Kustomize only reads resources at/below its root, so copy the manifest in.
+    cp "${MANIFEST_FILE}" "${TEMP_BUILD_DIR}/manifest.yaml"
+
+    # Discover the service keys under spec.services for this manifest.
+    SERVICE_KEYS=$(awk '
+        /^  services:/ {inblock=1; next}
+        inblock && /^  [a-zA-Z]/ {inblock=0}
+        inblock && /^    [A-Za-z0-9_-]+:/ {gsub(/[: ]/,""); print}
+    ' "${TEMP_BUILD_DIR}/manifest.yaml")
+
+    info "Rendering manifest with Dynamo image tag ${VERSION_TAG} via kustomize..."
+
+    # Image transformer fieldspec pointing at the CRD's mainContainer image path
+    # for every discovered service. Iterate line-by-line (robust to IFS).
+    {
+        echo "images:"
+        while IFS= read -r key; do
+            [ -z "${key}" ] && continue
+            echo "  - path: spec/services/${key}/extraPodSpec/mainContainer/image"
+            echo "    kind: DynamoGraphDeployment"
+        done <<EOF
+${SERVICE_KEYS}
+EOF
+    } > "${TEMP_BUILD_DIR}/dynamo-image-fieldspec.yaml"
+
+    cat > "${TEMP_BUILD_DIR}/kustomization.yaml" <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - manifest.yaml
+configurations:
+  - dynamo-image-fieldspec.yaml
+images:
+  - name: nvcr.io/nvidia/ai-dynamo/vllm-runtime
+    newTag: ${VERSION_TAG}
+  - name: nvcr.io/nvidia/ai-dynamo/sglang-runtime
+    newTag: ${VERSION_TAG}
+  - name: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime
+    newTag: ${VERSION_TAG}
+  - name: nvcr.io/nvidia/ai-dynamo/dynamo-frontend
+    newTag: ${VERSION_TAG}
+EOF
+
+    # Point the deploy step at the kustomize build directory.
+    MANIFEST_FILE="${TEMP_BUILD_DIR}"
 fi
 
 #---------------------------------------------------------------
@@ -276,8 +320,11 @@ if [ ! -d "${EXAMPLE_DIR}" ]; then
 fi
 success "Example directory found: ${EXAMPLE_DIR}"
 
-# Check if manifest file exists
-if [ ! -f "${MANIFEST_FILE}" ]; then
+# Check that the manifest is ready to apply. When a kustomize build dir was
+# rendered, MANIFEST_FILE points at that directory; otherwise it is the raw file.
+if [ -n "${TEMP_BUILD_DIR}" ] && [ -d "${MANIFEST_FILE}" ]; then
+    :
+elif [ ! -f "${MANIFEST_FILE}" ]; then
     error "Manifest file not found: ${MANIFEST_FILE}"
     exit 1
 fi
@@ -330,8 +377,8 @@ if [[ "$EXAMPLE" != "hello-world" ]]; then
     fi
 fi
 
-# Note: NGC token secret is NOT required for Dynamo v0.5.0 TensorRT-LLM images
-# The official nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.5.0 images are publicly accessible
+# Note: NGC token secret is NOT required for the TensorRT-LLM images at the configured Dynamo version
+# The official nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime images are publicly accessible
 # Commenting out NGC check as it's not needed for public Dynamo releases
 
 
@@ -345,18 +392,25 @@ section "Deploying ${EXAMPLE}"
 info "Applying manifest: ${MANIFEST_FILE}"
 info "Namespace: ${NAMESPACE}"
 
+# A kustomize build dir is applied with `-k`; a raw file with `-f`.
+if [ -n "${TEMP_BUILD_DIR}" ] && [ -d "${MANIFEST_FILE}" ]; then
+    APPLY_ARGS=(-k "${MANIFEST_FILE}")
+else
+    APPLY_ARGS=(-f "${MANIFEST_FILE}")
+fi
+
 # Deploy the example
-if kubectl apply -f "${MANIFEST_FILE}" -n "${NAMESPACE}"; then
+if kubectl apply "${APPLY_ARGS[@]}" -n "${NAMESPACE}"; then
     success "Manifest applied successfully"
-    # Clean up temporary manifest if created
-    if [ -n "${TEMP_MANIFEST}" ] && [ -f "${TEMP_MANIFEST}" ]; then
-        rm -f "${TEMP_MANIFEST}"
+    # Clean up temporary kustomize build directory if created
+    if [ -n "${TEMP_BUILD_DIR}" ] && [ -d "${TEMP_BUILD_DIR}" ]; then
+        rm -rf "${TEMP_BUILD_DIR}"
     fi
 else
     error "Failed to apply manifest"
-    # Clean up temporary manifest if created
-    if [ -n "${TEMP_MANIFEST}" ] && [ -f "${TEMP_MANIFEST}" ]; then
-        rm -f "${TEMP_MANIFEST}"
+    # Clean up temporary kustomize build directory if created
+    if [ -n "${TEMP_BUILD_DIR}" ] && [ -d "${TEMP_BUILD_DIR}" ]; then
+        rm -rf "${TEMP_BUILD_DIR}"
     fi
     exit 1
 fi
