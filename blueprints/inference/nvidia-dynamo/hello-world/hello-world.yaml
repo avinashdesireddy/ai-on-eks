@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Hello World DynamoGraphDeployment for ArgoCD deployment
-# This should be applied to the dynamo-cloud namespace where the platform is deployed
+# This should be applied to the dynamo-system namespace where the platform is deployed
 
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment

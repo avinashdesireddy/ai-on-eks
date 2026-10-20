@@ -32,7 +32,7 @@ This example demonstrates:
 ## Prerequisites
 
 - Dynamo platform deployed in your EKS cluster
-- `dynamo-cloud` namespace configured
+- `dynamo-system` namespace configured
 - CPU nodes available (no GPU requirements)
 
 ## YAML Structure Explained

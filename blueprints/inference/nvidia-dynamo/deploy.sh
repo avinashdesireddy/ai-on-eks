@@ -23,7 +23,7 @@
 #   - Example: DYNAMO_VERSION=v1.5.1 ./deploy.sh vllm
 #---------------------------------------------------------------
 
-set -euxo pipefail
+set -euo pipefail
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +40,7 @@ NAMESPACE="dynamo-system"
 
 # Dynamo version management
 TFVARS_FILE="${SCRIPT_DIR}/../../../infra/nvidia-dynamo/terraform/blueprint.tfvars"
-DEFAULT_VERSION="v1.5.1"  # Fallback if tfvars file not found (source of truth is blueprint.tfvars)
+DEFAULT_VERSION="v1.5.1"  # Fallback if tfvars file not found
 VERSION_SOURCE=""  # Track where version came from
 
 # Utility functions
